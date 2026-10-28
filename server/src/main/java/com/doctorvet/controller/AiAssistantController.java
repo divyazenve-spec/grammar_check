@@ -17,6 +17,8 @@ public class AiAssistantController {
 
     public record AiRequest(String species, String symptoms, String vitals) {}
 
+    public record RefineRequest(String text, String fieldType) {}
+
     @PostMapping("/diagnose")
     public ResponseEntity<AiAssistantService.AiResponse> generateDifferential(@RequestBody AiRequest request) {
         String species = request != null ? request.species() : "Canine";
@@ -24,5 +26,12 @@ public class AiAssistantController {
         String vitals = request != null ? request.vitals() : "";
 
         return ResponseEntity.ok(aiService.generateDifferential(species, symptoms, vitals));
+    }
+
+    @PostMapping("/refine-text")
+    public ResponseEntity<AiAssistantService.RefineResult> refineClinicalText(@RequestBody RefineRequest request) {
+        String text = request != null ? request.text() : "";
+        String fieldType = request != null ? request.fieldType() : "general";
+        return ResponseEntity.ok(aiService.refineClinicalText(text, fieldType));
     }
 }

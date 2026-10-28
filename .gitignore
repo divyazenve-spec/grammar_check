@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+
+# Large Model Weights (>100MB)
+*.safetensors
+*.bin
+*.pt
+*.onnx
+petcare_grammar_ai/petcare_grammar_model/model.safetensors
+
+# Database Runtime Files
+*.mv.db
+*.trace.db
+server/data/*.db
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+*.swp

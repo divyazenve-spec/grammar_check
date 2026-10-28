@@ -552,6 +552,10 @@ export const api = {
     diagnose: (data) => fetchJson('/ai-assist/diagnose', {
       method: 'POST',
       body: JSON.stringify(data)
+    }),
+    refineText: (data) => fetchJson('/ai-assist/refine-text', {
+      method: 'POST',
+      body: JSON.stringify(data)
     })
   },
 
@@ -916,5 +920,16 @@ export const api = {
       return url;
     },
     getPublicLive: (placement) => fetchJson(`/campaigns/public/live${placement ? '?placement=' + encodeURIComponent(placement) : ''}`)
+  },
+  ai: {
+    diagnose: (payload) => fetchJson('/ai-assist/diagnose', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+    refineText: (payload) => fetchJson('/ai-assist/refine-text', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    })
   }
 };
+

@@ -17,11 +17,6 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { api } from '../services/api';
-
-const SAMPLE_PHOTOS = [];
-const SAMPLE_STORIES = [];
-const SAMPLE_VIDEOS = [];
-
 export function CreatePostModal({
   isOpen,
   onClose,

@@ -1,0 +1,15 @@
+{
+  "base_model": "C:\\Users\\tkb25\\OneDrive\\Desktop\\zenve-vet\\petcare_grammar_ai\\petcare_grammar_model",
+  "task": "petcare_grammar_correction",
+  "epochs": 1,
+  "batch_size": 8,
+  "learning_rate": 3e-05,
+  "final_train_loss": 0.5796,
+  "eval_metrics": {
+    "eval_loss": 0.39499631524086,
+    "eval_runtime": 10.8211,
+    "eval_samples_per_second": 16.634,
+    "eval_steps_per_second": 2.125,
+    "epoch": 1.0
+  }
+}
