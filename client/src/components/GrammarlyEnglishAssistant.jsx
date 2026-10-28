@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Sparkles, Check, ChevronDown, ChevronUp, AlertCircle, ShieldCheck, Zap } from 'lucide-react';
 import { analyzeClinicalEnglish, applySingleIssue, applyAllIssuesToText } from '../services/grammarlyAnalysisEngine';
+import { localRefineClinicalText } from '../hooks/useClinicalAutoRefine';
 import { api } from '../services/api';
 
 /**
@@ -62,14 +63,30 @@ export default function GrammarlyEnglishAssistant({
     if (!text || !text.trim() || !onApplyText) return;
     setIsAiRefining(true);
     try {
-      const res = await api.ai.refineText({ text: text.trim(), fieldType: 'symptoms' });
-      if (res && res.refinedText && res.refinedText.trim()) {
-        onApplyText(res.refinedText.trim());
+      let refined = null;
+
+      // 1. First check backend AI refine endpoint
+      try {
+        const res = await api.ai.refineText({ text: text.trim(), fieldType: 'symptoms' });
+        if (res && res.refinedText && res.refinedText.trim()) {
+          refined = res.refinedText.trim();
+        }
+      } catch (err) {
+        console.warn('Backend autocorrect fallback to local engine:', err);
+      }
+
+      // 2. Training dataset & spelling engine fallback (Tier 1)
+      if (!refined) {
+        refined = localRefineClinicalText(text.trim(), 'symptoms');
+      }
+
+      if (refined) {
+        onApplyText(refined);
         setJustFixedAll(true);
         setTimeout(() => setJustFixedAll(false), 2500);
       }
     } catch (err) {
-      console.warn('PetCare AI Refine fallback:', err);
+      console.warn('PetCare AI Refine error:', err);
       if (onExternalRefine) onExternalRefine();
     } finally {
       setIsAiRefining(false);

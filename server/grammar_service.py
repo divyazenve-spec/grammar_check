@@ -477,8 +477,16 @@ def correct_single_sentence(sentence: str) -> str:
     if raw_norm in t_map:
         return t_map[raw_norm]
 
-    # 2. Fast Fuzzy Match against verified dataset (Tier 1 Fuzzy Levenshtein >= 85%)
-    close_matches = difflib.get_close_matches(norm_key, t_map.keys(), n=1, cutoff=0.85)
+    # 2. Fast Fuzzy Match against verified dataset (Tier 1 with Patient Subject Integrity)
+    ANIMAL_SUBJECTS = {'dog', 'dogs', 'cat', 'cats', 'puppy', 'puppies', 'kitten', 'kittens', 'cow', 'cows', 'calf', 'calves', 'horse', 'horses', 'foal', 'foals', 'bird', 'birds', 'parrot', 'parrots', 'cattle', 'heifer', 'bull', 'mare', 'stallion', 'pony', 'hound'}
+    def get_subj(txt):
+        words = {re.sub(r'[^a-z]', '', w) for w in txt.lower().split()}
+        matched = words.intersection(ANIMAL_SUBJECTS)
+        return next(iter(matched)) if matched else None
+
+    input_subj = get_subj(norm_key)
+    filtered_keys = [k for k in t_map.keys() if (not input_subj or get_subj(k) == input_subj)]
+    close_matches = difflib.get_close_matches(norm_key, filtered_keys, n=1, cutoff=0.76)
     if close_matches:
         return t_map[close_matches[0]]
 

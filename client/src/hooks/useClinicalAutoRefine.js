@@ -235,25 +235,61 @@ function computeLevenshtein(a, b) {
   return matrix[bn][an];
 }
 
+const ANIMAL_SUBJECTS = ['dog', 'dogs', 'cat', 'cats', 'puppy', 'puppies', 'kitten', 'kittens', 'cow', 'cows', 'calf', 'calves', 'horse', 'horses', 'foal', 'foals', 'bird', 'birds', 'parrot', 'parrots', 'cattle', 'heifer', 'bull', 'mare', 'stallion', 'pony', 'hound'];
+
+function extractSubject(str) {
+  const words = str.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z]/g, ''));
+  return words.find(w => ANIMAL_SUBJECTS.includes(w)) || null;
+}
+
 export function findDatasetFuzzyMatch(normText) {
   if (!normText || normText.length < 6) return null;
   let bestMatch = null;
   let bestScore = 0;
   const keys = Object.keys(TRAINING_DATASET_MAP);
+  const inputSubject = extractSubject(normText);
+
+  const cleanStemWords = (str) => {
+    return new Set(str.toLowerCase().split(/\s+/).map(w => {
+      let c = w.replace(/[^a-z0-9]/g, '');
+      if (c.endsWith('ing') && c.length > 4) c = c.slice(0, -3);
+      else if (c.endsWith('s') && c.length > 3) c = c.slice(0, -1);
+      return c;
+    }).filter(Boolean));
+  };
+
+  const inputWords = cleanStemWords(normText);
+
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
-    if (Math.abs(key.length - normText.length) > Math.max(5, Math.floor(normText.length * 0.35))) {
+    // Strict Patient Species Integrity: Never substitute species (e.g. dog -> cat)
+    if (inputSubject) {
+      const keySubject = extractSubject(key);
+      if (keySubject !== inputSubject) {
+        continue;
+      }
+    }
+
+    if (Math.abs(key.length - normText.length) > Math.max(6, Math.floor(normText.length * 0.4))) {
       continue;
     }
     const dist = computeLevenshtein(normText, key);
     const maxLen = Math.max(normText.length, key.length);
-    const score = 1 - (dist / maxLen);
-    if (score > bestScore) {
-      bestScore = score;
+    const charSim = 1 - (dist / maxLen);
+
+    const keyWords = cleanStemWords(key);
+    let intersection = 0;
+    inputWords.forEach(w => { if (keyWords.has(w)) intersection++; });
+    const union = new Set([...inputWords, ...keyWords]).size;
+    const tokenSim = union === 0 ? 0 : intersection / union;
+
+    const combinedScore = Math.max(charSim, 0.45 * charSim + 0.55 * tokenSim);
+    if (combinedScore > bestScore) {
+      bestScore = combinedScore;
       bestMatch = key;
     }
   }
-  if (bestScore >= 0.85 && bestMatch) {
+  if (bestScore >= 0.76 && bestMatch) {
     return TRAINING_DATASET_MAP[bestMatch];
   }
   return null;
@@ -331,10 +367,22 @@ export function refineSingleClinicalSentence(singleText) {
     return `for ${count.toLowerCase()} ${unit.toLowerCase()}`;
   });
 
-  // 3. Subject-Verb Agreement: "dog have fever", "cat have vomit"
-  s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+have\s+fever\b/gi, '$1 has had a fever');
-  s = s.replace(/\bhave\s+fever\b/gi, 'has had a fever');
-  s = s.replace(/\bhas\s+fever\b/gi, 'has had a fever');
+  // 3. Subject-Verb Agreement: General have -> has for singular patients
+  s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|kitty|horse|foal|mare|stallion|pony|cow|calf|cattle|heifer|bull|bird|parrot|chicken|patient|animal)|she|he|it)\s+have\b/gi, '$1 has');
+
+  s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+have\s+fever\b/gi, '$1 has a fever');
+  s = s.replace(/\bhave\s+(?:very\s+)?high\s+fever\b/gi, 'has a high fever');
+  s = s.replace(/\bhas\s+(?:very\s+)?high\s+fever\b/gi, 'has a high fever');
+  s = s.replace(/\bhave\s+(?:a\s+)?mild\s+fever\b/gi, 'has a mild fever');
+  s = s.replace(/\bhas\s+mild\s+fever\b/gi, 'has a mild fever');
+  s = s.replace(/\bhave\s+fever\b/gi, 'has a fever');
+  s = s.replace(/\bhas\s+fever\b/gi, 'has a fever');
+  s = s.replace(/\bhave\s+cough\b/gi, 'has a cough');
+  s = s.replace(/\bhas\s+cough\b/gi, 'has a cough');
+  s = s.replace(/\bhave\s+(?:bad|foul)\s+smell\b/gi, 'has a foul odor');
+  s = s.replace(/\bhas\s+(?:bad|foul)\s+smell\b/gi, 'has a foul odor');
+  s = s.replace(/\bhave\s+(ear|eye|skin)\s+infection\b/gi, 'has an $1 infection');
+  s = s.replace(/\bhas\s+(ear|eye|skin)\s+infection\b/gi, 'has an $1 infection');
 
   s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+have\s+(vomiting|vomit|diarrhea|cough|loose motion|pain|seizures?)\b/gi, (m, subj, sym) => {
     return `${subj} has had ${sym === 'vomit' ? 'vomiting' : sym}`;
@@ -342,6 +390,27 @@ export function refineSingleClinicalSentence(singleText) {
   s = s.replace(/\bhave\s+(vomiting|vomit|diarrhea|cough|loose motion|pain|seizures?)\b/gi, (m, sym) => {
     return `has had ${sym === 'vomit' ? 'vomiting' : sym}`;
   });
+  s = s.replace(/\bhave\s+(fleas?|ticks?)\b/gi, 'has $1');
+
+  // Action coordination: "and shiver", "and vomit", "and cough"
+  s = s.replace(/\band\s+(?:is\s+)?shiver\b/gi, 'and is shivering');
+  s = s.replace(/\band\s+shivering\b/gi, 'and is shivering');
+  s = s.replace(/\band\s+(?:is\s+)?vomit(?:s)?\b(?![a-zA-Z])/gi, 'and is vomiting');
+  s = s.replace(/\band\s+(?:is\s+)?cough(?:s)?\b(?![a-zA-Z])/gi, 'and is coughing');
+  s = s.replace(/\band\s+(?:is\s+)?limp(?:s)?\b(?![a-zA-Z])/gi, 'and is limping');
+  s = s.replace(/\band\s+(?:is\s+)?scratch(?:es)?\b(?![a-zA-Z])/gi, 'and is scratching');
+  s = s.replace(/\band\s+(?:is\s+)?bleed(?:s)?\b(?![a-zA-Z])/gi, 'and is bleeding');
+
+  // Patient is down / recumbent
+  s = s.replace(/\b((?:the|my)\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\s+down\s+on\s+(?:the\s+)?ground\b/gi, '$1 is recumbent on the ground');
+  s = s.replace(/\b((?:the|my)\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\s+down\b/gi, '$1 is down');
+
+  // Colloquial body parts
+  s = s.replace(/\btouched\s+on\s+(?:the\s+)?(?:belly|stomach|tummy)\b/gi, 'touched on the abdomen');
+
+  // Patient + vomit -> has vomited
+  s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+vomit\b(?![a-zA-Z])/gi, '$1 has vomited');
+  s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+vomits\b(?![a-zA-Z])/gi, '$1 has been vomiting');
 
   // 4. Food Intake & Inappetence
   s = s.replace(/\b(?:(?:is|has)\s+)?not\s+taking\s+food\s+properly\b/gi, 'has not been eating properly');

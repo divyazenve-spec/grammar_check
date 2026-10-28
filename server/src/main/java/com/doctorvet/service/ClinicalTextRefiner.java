@@ -85,6 +85,22 @@ public class ClinicalTextRefiner {
         TRAINING_DATASET_MAP.put("she forget to give morning dose", "She forgot to administer the morning dose.");
     }
 
+    private static final Set<String> ANIMAL_SUBJECTS = Set.of(
+            "dog", "dogs", "cat", "cats", "puppy", "puppies", "kitten", "kittens",
+            "cow", "cows", "calf", "calves", "horse", "horses", "foal", "foals",
+            "bird", "birds", "parrot", "parrots", "cattle", "heifer", "bull", "mare", "stallion", "pony", "hound"
+    );
+
+    private String extractSubject(String str) {
+        if (str == null) return null;
+        String[] words = str.toLowerCase().split("\\s+");
+        for (String w : words) {
+            String clean = w.replaceAll("[^a-zA-Z]", "");
+            if (ANIMAL_SUBJECTS.contains(clean)) return clean;
+        }
+        return null;
+    }
+
     /**
      * Fast retrieval of exact or fuzzy ground-truth dataset correction (Tier 1).
      */
@@ -104,8 +120,17 @@ public class ClinicalTextRefiner {
         if (normKey == null || normKey.length() < 6) return null;
         String bestMatch = null;
         double bestScore = 0.0;
+        String inputSubject = extractSubject(normKey);
 
         for (String key : TRAINING_DATASET_MAP.keySet()) {
+            // Strict Patient Species Integrity: Never substitute species (e.g. dog -> cat)
+            if (inputSubject != null) {
+                String keySubject = extractSubject(key);
+                if (!inputSubject.equals(keySubject)) {
+                    continue;
+                }
+            }
+
             if (Math.abs(key.length() - normKey.length()) > Math.max(5, (int)(normKey.length() * 0.35))) {
                 continue;
             }
@@ -116,7 +141,7 @@ public class ClinicalTextRefiner {
             }
         }
 
-        if (bestScore >= 0.85 && bestMatch != null) {
+        if (bestScore >= 0.76 && bestMatch != null) {
             return TRAINING_DATASET_MAP.get(bestMatch);
         }
         return null;
@@ -126,7 +151,33 @@ public class ClinicalTextRefiner {
         int maxLen = Math.max(s1.length(), s2.length());
         if (maxLen == 0) return 1.0;
         int distance = computeLevenshteinDistance(s1, s2);
-        return 1.0 - ((double) distance / maxLen);
+        double charSim = 1.0 - ((double) distance / maxLen);
+
+        // Word-level token overlap
+        String[] w1 = s1.split("\\s+");
+        String[] w2 = s2.split("\\s+");
+        Set<String> set1 = new HashSet<>();
+        for (String w : w1) {
+            String clean = w.replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+            if (clean.endsWith("ing") && clean.length() > 4) clean = clean.substring(0, clean.length() - 3);
+            else if (clean.endsWith("s") && clean.length() > 3) clean = clean.substring(0, clean.length() - 1);
+            if (!clean.isEmpty()) set1.add(clean);
+        }
+        Set<String> set2 = new HashSet<>();
+        for (String w : w2) {
+            String clean = w.replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+            if (clean.endsWith("ing") && clean.length() > 4) clean = clean.substring(0, clean.length() - 3);
+            else if (clean.endsWith("s") && clean.length() > 3) clean = clean.substring(0, clean.length() - 1);
+            if (!clean.isEmpty()) set2.add(clean);
+        }
+
+        Set<String> intersection = new HashSet<>(set1);
+        intersection.retainAll(set2);
+        Set<String> union = new HashSet<>(set1);
+        union.addAll(set2);
+        double tokenSim = union.isEmpty() ? 0.0 : (double) intersection.size() / union.size();
+
+        return Math.max(charSim, 0.45 * charSim + 0.55 * tokenSim);
     }
 
     private int computeLevenshteinDistance(String a, String b) {
@@ -418,15 +469,48 @@ public class ClinicalTextRefiner {
 
         t = t.replaceAll("(?i)\\b(?:from|since)\\s+(one|two|three|four|five|six|seven|eight|nine|ten)\\s*(days?|weeks?|months?|hours?)\\b", "for $1 $2");
 
-        // 3. Subject-Verb Agreement: "dog have fever", "cat have vomit"
-        t = t.replaceAll("(?i)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+have\\s+fever\\b", "$1 has had a fever");
-        t = t.replaceAll("(?i)\\bhave\\s+fever\\b", "has had a fever");
-        t = t.replaceAll("(?i)\\bhas\\s+fever\\b", "has had a fever");
+        // 3. Subject-Verb Agreement: General have -> has for singular patients
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|kitty|horse|foal|mare|stallion|pony|cow|calf|cattle|heifer|bull|bird|parrot|chicken|patient|animal)|she|he|it)\\s+have\\b", "$1 has");
+
+        t = t.replaceAll("(?i)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+have\\s+fever\\b", "$1 has a fever");
+        t = t.replaceAll("(?i)\\bhave\\s+(?:very\\s+)?high\\s+fever\\b", "has a high fever");
+        t = t.replaceAll("(?i)\\bhas\\s+(?:very\\s+)?high\\s+fever\\b", "has a high fever");
+        t = t.replaceAll("(?i)\\bhave\\s+(?:a\\s+)?mild\\s+fever\\b", "has a mild fever");
+        t = t.replaceAll("(?i)\\bhas\\s+mild\\s+fever\\b", "has a mild fever");
+        t = t.replaceAll("(?i)\\bhave\\s+fever\\b", "has a fever");
+        t = t.replaceAll("(?i)\\bhas\\s+fever\\b", "has a fever");
+        t = t.replaceAll("(?i)\\bhave\\s+cough\\b", "has a cough");
+        t = t.replaceAll("(?i)\\bhas\\s+cough\\b", "has a cough");
+        t = t.replaceAll("(?i)\\bhave\\s+(?:bad|foul)\\s+smell\\b", "has a foul odor");
+        t = t.replaceAll("(?i)\\bhas\\s+(?:bad|foul)\\s+smell\\b", "has a foul odor");
+        t = t.replaceAll("(?i)\\bhave\\s+(ear|eye|skin)\\s+infection\\b", "has an $1 infection");
+        t = t.replaceAll("(?i)\\bhas\\s+(ear|eye|skin)\\s+infection\\b", "has an $1 infection");
 
         t = t.replaceAll("(?i)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+have\\s+(vomiting|vomit|diarrhea|cough|loose motion|pain|seizures?)\\b", "$1 has had $2");
         t = t.replaceAll("(?i)\\bhave\\s+(vomiting|diarrhea|cough|pain|seizures?)\\b", "has had $1");
         t = t.replaceAll("(?i)\\bhave\\s+vomit\\b", "has had vomiting");
         t = t.replaceAll("(?i)\\bhave\\s+loose motion\\b", "has had diarrhea");
+        t = t.replaceAll("(?i)\\bhave\\s+(fleas?|ticks?)\\b", "has $1");
+
+        // Action coordination: "and shiver", "and vomit", "and cough"
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?shiver\\b", "and is shivering");
+        t = t.replaceAll("(?i)\\band\\s+shivering\\b", "and is shivering");
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?vomit(?:s)?\\b(?![a-zA-Z])", "and is vomiting");
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?cough(?:s)?\\b(?![a-zA-Z])", "and is coughing");
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?limp(?:s)?\\b(?![a-zA-Z])", "and is limping");
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?scratch(?:es)?\\b(?![a-zA-Z])", "and is scratching");
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?bleed(?:s)?\\b(?![a-zA-Z])", "and is bleeding");
+
+        // Patient is down / recumbent
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\\s+down\\s+on\\s+(?:the\\s+)?ground\\b", "$1 is recumbent on the ground");
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\\s+down\\b", "$1 is down");
+
+        // Colloquial body parts
+        t = t.replaceAll("(?i)\\btouched\\s+on\\s+(?:the\\s+)?(?:belly|stomach|tummy)\\b", "touched on the abdomen");
+
+        // Patient + vomit -> has vomited
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+vomit\\b(?![a-zA-Z])", "$1 has vomited");
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+vomits\\b(?![a-zA-Z])", "$1 has been vomiting");
 
         // 4. Food Intake & Inappetence
         t = t.replaceAll("(?i)\\b(?:(?:is|has)\\s+)?not\\s+taking\\s+food\\s+properly\\b", "has not been eating properly");
