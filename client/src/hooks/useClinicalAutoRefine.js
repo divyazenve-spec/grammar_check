@@ -211,6 +211,54 @@ export function localRefineClinicalText(rawText, fieldType = 'general') {
   return refinedLines.join('\n').trim();
 }
 
+// Fast Levenshtein distance for client-side fuzzy matching
+function computeLevenshtein(a, b) {
+  const an = a ? a.length : 0;
+  const bn = b ? b.length : 0;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix = Array.from({ length: bn + 1 }, (_, i) => [i]);
+  for (let j = 0; j <= an; j++) matrix[0][j] = j;
+  for (let i = 1; i <= bn; i++) {
+    for (let j = 1; j <= an; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[bn][an];
+}
+
+export function findDatasetFuzzyMatch(normText) {
+  if (!normText || normText.length < 6) return null;
+  let bestMatch = null;
+  let bestScore = 0;
+  const keys = Object.keys(TRAINING_DATASET_MAP);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (Math.abs(key.length - normText.length) > Math.max(5, Math.floor(normText.length * 0.35))) {
+      continue;
+    }
+    const dist = computeLevenshtein(normText, key);
+    const maxLen = Math.max(normText.length, key.length);
+    const score = 1 - (dist / maxLen);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = key;
+    }
+  }
+  if (bestScore >= 0.85 && bestMatch) {
+    return TRAINING_DATASET_MAP[bestMatch];
+  }
+  return null;
+}
+
 export function refineSingleClinicalSentence(singleText) {
   if (!singleText || !singleText.trim()) return singleText;
   let t = singleText.trim();
@@ -220,6 +268,12 @@ export function refineSingleClinicalSentence(singleText) {
   // Direct PetCare training dataset lookup
   if (TRAINING_DATASET_MAP[lowerNorm]) {
     return TRAINING_DATASET_MAP[lowerNorm];
+  }
+
+  // Fast fuzzy match against dataset (Tier 1)
+  const directFuzzy = findDatasetFuzzyMatch(lowerNorm);
+  if (directFuzzy) {
+    return directFuzzy;
   }
 
   // Chief Complaint & Clinical Signs Refinement
@@ -233,6 +287,11 @@ export function refineSingleClinicalSentence(singleText) {
   const postSpellingNorm = s.toLowerCase().replace(/[.!?,]+$/g, '').replace(/\s+/g, ' ').trim();
   if (TRAINING_DATASET_MAP[postSpellingNorm]) {
     return TRAINING_DATASET_MAP[postSpellingNorm];
+  }
+
+  const postSpellingFuzzy = findDatasetFuzzyMatch(postSpellingNorm);
+  if (postSpellingFuzzy) {
+    return postSpellingFuzzy;
   }
 
   // Pet Name introductions

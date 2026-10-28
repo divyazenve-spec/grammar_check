@@ -9,6 +9,9 @@
  * - Delivery & Formality: Objective clinical tone, professional veterinary terminology
  */
 
+import { TRAINING_DATASET_MAP } from './trainingDataMap.js';
+import { findDatasetFuzzyMatch } from '../hooks/useClinicalAutoRefine.js';
+
 const VET_SPELLING_DICTIONARY = {
   'vomited': ['vomitted', 'vomitd', 'vomitting'],
   'vomiting': ['vomitting', 'vomting'],
@@ -55,6 +58,23 @@ export function analyzeClinicalEnglish(rawText) {
   const words = text.split(/\s+/).filter(Boolean);
   const wordCount = words.length;
   const issues = [];
+
+  // ==========================================
+  // 0. VERIFIED CLINICAL DATASET (Exact & Fuzzy Tier 1)
+  // ==========================================
+  const normKey = text.toLowerCase().replace(/[.!?,]+$/g, '').replace(/\s+/g, ' ').trim();
+  const directMatch = TRAINING_DATASET_MAP[normKey] || findDatasetFuzzyMatch(normKey);
+  if (directMatch && directMatch.toLowerCase() !== text.toLowerCase()) {
+    issues.push({
+      id: 'dataset-match',
+      category: 'correctness',
+      categoryLabel: 'Verified Clinical Phrasing',
+      original: rawText,
+      replacement: directMatch,
+      explanation: 'Matches clinically verified veterinary grammar standard from the PetCare clinical corpus.',
+      confidence: 0.99
+    });
+  }
 
   // ==========================================
   // 1. CORRECTNESS (Grammar, Spelling, Punctuation)
@@ -418,6 +438,10 @@ export function analyzeClinicalEnglish(rawText) {
 export function applySingleIssue(rawText, issue) {
   if (!rawText || !issue) return rawText;
 
+  if (issue.id === 'dataset-match') {
+    return issue.replacement;
+  }
+
   if (issue.id === 'punct-end') {
     return rawText.trim().replace(/[.!?]*$/, '.');
   }
@@ -442,6 +466,12 @@ export function applySingleIssue(rawText, issue) {
 export function applyAllIssuesToText(rawText, issues) {
   if (!rawText) return '';
   if (!issues || issues.length === 0) return rawText;
+
+  // Direct priority: verified dataset match returns the full verified clinical sentence
+  const datasetIssue = issues.find(i => i.id === 'dataset-match');
+  if (datasetIssue && datasetIssue.replacement) {
+    return datasetIssue.replacement;
+  }
 
   let result = rawText;
   for (const issue of issues) {

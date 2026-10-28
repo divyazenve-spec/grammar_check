@@ -61,24 +61,106 @@ public class AiAssistantService {
      */
     public RefineResult refineClinicalText(String rawText, String fieldType) {
         if (rawText == null || rawText.trim().isEmpty()) {
-            return new RefineResult(rawText != null ? rawText : "", "", false, modelId);
+            return new RefineResult(rawText != null ? rawText : "", "", false, "zenve-grammar-engine");
         }
 
         String input = rawText.trim();
 
-        // 1. Attempt grammar correction using PetCare AI local model service
+        // 1. TIER 1 - Fast Path: Ground-Truth Dataset Match (Exact or Fuzzy Levenshtein >= 85%)
+        String fastMatch = clinicalTextRefiner.getDirectDatasetMatch(input);
+        if (fastMatch != null && !fastMatch.isBlank()) {
+            boolean changed = !fastMatch.trim().equalsIgnoreCase(input);
+            return new RefineResult(rawText, fastMatch.trim(), changed, "verified-dataset-cache");
+        }
+
+        // 2. TIER 2 - Deep Semantic Layer: Gemini 2.5 Flash API (Zero model-training required)
+        if (geminiApiKey != null && !geminiApiKey.isBlank()) {
+            try {
+                String geminiResult = callGeminiTextRefiner(input, fieldType);
+                if (geminiResult != null && !geminiResult.isBlank()) {
+                    String polished = clinicalTextRefiner.refine(geminiResult.trim(), fieldType);
+                    boolean changed = !polished.trim().equalsIgnoreCase(input);
+                    return new RefineResult(rawText, polished.trim(), changed, "gemini-2.5-flash");
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 3. Optional Local Grammar Microservice (if running on port 5001)
         String intermediate = input;
+        String activeModel = "clinical-rules-engine";
         try {
             String pcResult = callPetCareGrammarModel(input, fieldType);
             if (pcResult != null && !pcResult.isBlank()) {
                 intermediate = pcResult.trim();
+                activeModel = "petcare-grammar-service";
             }
         } catch (Exception ignored) {}
 
-        // 2. High-precision clinical grammar refiner engine guarantees auxiliary verbs & clinical terminology
+        // 4. TIER 1 Deterministic Fallback: Multi-species Clinical Grammar Refiner Engine
         String refined = clinicalTextRefiner.refine(intermediate, fieldType);
         boolean changed = !refined.trim().equalsIgnoreCase(input);
-        return new RefineResult(rawText, refined, changed, modelId);
+        return new RefineResult(rawText, refined, changed, activeModel);
+    }
+
+    private String callGeminiTextRefiner(String text, String fieldType) {
+        try {
+            String prompt = """
+                You are an expert veterinary medical English editor.
+                Correct and refine the following veterinary clinical text into natural, professional clinical English.
+                
+                Strict Rules:
+                1. Strictly preserve all clinical meanings, species, anatomical terms, dosages, medications, and timeframes.
+                2. Fix grammatical errors, subject-verb agreement, verb tenses, and missing articles (e.g. "dog not eating from 2 days" -> "The dog has not been eating for 2 days.").
+                3. Correct common typing and spelling mistakes (e.g. "vomitted" -> "vomited", "loose motions" -> "diarrhea").
+                4. Maintain objective, professional clinical tone.
+                5. Output ONLY the refined English text with no quotes, preamble, markdown formatting, or conversational commentary.
+                
+                Clinical Field: %s
+                Raw Input: %s
+                """.formatted(
+                    fieldType != null ? fieldType : "clinical presentation",
+                    text.replace("\"", "\\\"").replace("\n", " ")
+                );
+
+            String requestBody = "{\"contents\":[{\"parts\":[{\"text\":\"" + prompt.replace("\n", "\\n").replace("\"", "\\\"") + "\"}]}]}";
+
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofMillis(1500))
+                    .build();
+
+            String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + geminiApiKey.trim();
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofMillis(3500))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .build();
+
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200 && response.body() != null) {
+                String body = response.body();
+                int textIdx = body.indexOf("\"text\": \"");
+                if (textIdx != -1) {
+                    int start = textIdx + 9;
+                    int end = body.indexOf("\"", start);
+                    if (end != -1) {
+                        String clean = body.substring(start, end)
+                                .replace("\\n", "\n")
+                                .replace("\\\"", "\"")
+                                .replace("\\r", "")
+                                .trim();
+                        if (clean.startsWith("\"") && clean.endsWith("\"") && clean.length() > 1) {
+                            clean = clean.substring(1, clean.length() - 1).trim();
+                        }
+                        if (!clean.isBlank()) {
+                            return clean;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private String callPetCareGrammarModel(String text, String fieldType) {

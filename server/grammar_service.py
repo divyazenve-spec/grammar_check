@@ -451,10 +451,13 @@ def get_training_map():
 
 def correct_single_sentence(sentence: str) -> str:
     """
-    Corrects a single sentence using the training dataset lookup,
-    fine-tuned HappyTransformer PetCare model, and clinical grammar rules.
+    Corrects a single sentence using Two-Tier Production Architecture:
+    1. Ground-truth dataset lookup (Exact & Fuzzy match >= 85%)
+    2. Zero-shot Gemini Flash in-context inference (if GEMINI_API_KEY is present)
+    3. Multi-species clinical grammar rules and shorthand rectification
     """
     import re
+    import difflib
     s = sentence.strip()
     if not s:
         return ""
@@ -462,7 +465,7 @@ def correct_single_sentence(sentence: str) -> str:
     # Pre-rectify broken corpus (misplaced dots, commas, symbols, dangling copulas)
     s_pre = normalize_broken_corpus(s)
 
-    # 1. Exact or normalized lookup in training dataset
+    # 1. Exact or normalized lookup in training dataset (Tier 1 Fast-Path)
     t_map = get_training_map()
     norm_key = re.sub(r"[.!?,;:]+$", "", s_pre.lower().strip())
     norm_key = re.sub(r"\s+", " ", norm_key)
@@ -474,9 +477,38 @@ def correct_single_sentence(sentence: str) -> str:
     if raw_norm in t_map:
         return t_map[raw_norm]
 
-    # 2. HappyTransformer inference with fine-tuned PetCare model
+    # 2. Fast Fuzzy Match against verified dataset (Tier 1 Fuzzy Levenshtein >= 85%)
+    close_matches = difflib.get_close_matches(norm_key, t_map.keys(), n=1, cutoff=0.85)
+    if close_matches:
+        return t_map[close_matches[0]]
+
+    # 3. Deep Semantic Layer: Gemini Flash API (Tier 2 Zero-Training)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            import urllib.request
+            prompt = (
+                "You are an expert veterinary clinical editor. "
+                "Correct the grammar, spelling, and phrasing of this clinical note into clear, natural English. "
+                "Preserve all clinical terms and dosages. Output ONLY the corrected sentence with no quotes:\n\n"
+                f"{s_pre}"
+            )
+            payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                ans = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                if ans:
+                    if ans.startswith('"') and ans.endswith('"') and len(ans) > 1:
+                        ans = ans[1:-1].strip()
+                    return ans
+        except Exception:
+            pass
+
+    # 4. HappyTransformer inference (fallback if model weights are explicitly installed)
     candidate = None
-    if _model_ready or init_happy_model():
+    if _model_ready:
         try:
             prefixed_input = f"grammar: {s_pre}"
             res = _happy_tt.generate_text(prefixed_input, args=_tt_settings)
@@ -484,10 +516,10 @@ def correct_single_sentence(sentence: str) -> str:
                 candidate_text = res.text.strip()
                 if is_valid_english_text(candidate_text):
                     candidate = candidate_text
-        except Exception as e:
-            print(f"[Inference Warning] HappyTransformer generation error: {e}")
+        except Exception:
+            pass
 
-    # 3. Clinical rule-based refinement
+    # 5. Deterministic Clinical rule-based refinement
     base = candidate if candidate else s_pre
     if "cud" in s.lower() and "cud" not in base.lower():
         base = re.sub(r'\b(?:was\s+|is\s+)?not\s+chewing\b', 'is not chewing its cud', base, flags=re.IGNORECASE)

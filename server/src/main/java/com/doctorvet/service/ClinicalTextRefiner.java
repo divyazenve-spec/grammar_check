@@ -85,6 +85,66 @@ public class ClinicalTextRefiner {
         TRAINING_DATASET_MAP.put("she forget to give morning dose", "She forgot to administer the morning dose.");
     }
 
+    /**
+     * Fast retrieval of exact or fuzzy ground-truth dataset correction (Tier 1).
+     */
+    public String getDirectDatasetMatch(String text) {
+        if (text == null || text.trim().isEmpty()) return null;
+        String normKey = text.toLowerCase().replaceAll("[.!?,]+$", "").replaceAll("\\s+", " ").trim();
+        if (TRAINING_DATASET_MAP.containsKey(normKey)) {
+            return TRAINING_DATASET_MAP.get(normKey);
+        }
+        return findFuzzyMatch(normKey);
+    }
+
+    /**
+     * Levenshtein & token-overlap fuzzy matcher across verified clinical dataset.
+     */
+    public String findFuzzyMatch(String normKey) {
+        if (normKey == null || normKey.length() < 6) return null;
+        String bestMatch = null;
+        double bestScore = 0.0;
+
+        for (String key : TRAINING_DATASET_MAP.keySet()) {
+            if (Math.abs(key.length() - normKey.length()) > Math.max(5, (int)(normKey.length() * 0.35))) {
+                continue;
+            }
+            double score = calculateSimilarity(normKey, key);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = key;
+            }
+        }
+
+        if (bestScore >= 0.85 && bestMatch != null) {
+            return TRAINING_DATASET_MAP.get(bestMatch);
+        }
+        return null;
+    }
+
+    private double calculateSimilarity(String s1, String s2) {
+        int maxLen = Math.max(s1.length(), s2.length());
+        if (maxLen == 0) return 1.0;
+        int distance = computeLevenshteinDistance(s1, s2);
+        return 1.0 - ((double) distance / maxLen);
+    }
+
+    private int computeLevenshteinDistance(String a, String b) {
+        int[] costs = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) costs[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            costs[0] = i;
+            int nw = i - 1;
+            for (int j = 1; j <= b.length(); j++) {
+                int cj = Math.min(1 + Math.min(costs[j], costs[j - 1]),
+                        a.charAt(i - 1) == b.charAt(j - 1) ? nw : nw + 1);
+                nw = costs[j];
+                costs[j] = cj;
+            }
+        }
+        return costs[b.length()];
+    }
+
     public String refine(String rawText, String fieldType) {
         if (rawText == null || rawText.trim().isEmpty()) {
             return rawText;
@@ -93,10 +153,10 @@ public class ClinicalTextRefiner {
         String input = rawText.trim();
         String type = fieldType != null ? fieldType.toLowerCase().trim() : "general";
 
-        // Direct PetCare training dataset lookup
-        String normKey = input.toLowerCase().replaceAll("[.!?,]+$", "").replaceAll("\\s+", " ").trim();
-        if (TRAINING_DATASET_MAP.containsKey(normKey)) {
-            return TRAINING_DATASET_MAP.get(normKey);
+        // Direct PetCare training dataset lookup (Tier 1 Fast-Path)
+        String fastMatch = getDirectDatasetMatch(input);
+        if (fastMatch != null) {
+            return fastMatch;
         }
 
         // If it's vitals or contains clear vitals shorthand, process as vitals/exam
@@ -184,6 +244,12 @@ public class ClinicalTextRefiner {
         String t = text.trim();
         t = t.replaceAll("(?<=[a-zA-Z])\\.(?=[a-zA-Z])", "");
         t = resolveBrokenCopula(t);
+
+        // Check if individual sentence matches dataset directly
+        String fastMatch = getDirectDatasetMatch(t);
+        if (fastMatch != null) {
+            return fastMatch;
+        }
 
         // 0. Rectify spelling & keyboard typos
         t = t.replaceAll("(?i)\\bmi\\b", "my");
