@@ -237,9 +237,34 @@ function computeLevenshtein(a, b) {
 
 const ANIMAL_SUBJECTS = ['dog', 'dogs', 'cat', 'cats', 'puppy', 'puppies', 'kitten', 'kittens', 'cow', 'cows', 'calf', 'calves', 'horse', 'horses', 'foal', 'foals', 'bird', 'birds', 'parrot', 'parrots', 'cattle', 'heifer', 'bull', 'mare', 'stallion', 'pony', 'hound'];
 
+const WORD_TO_DIGIT = {
+  one: '1', two: '2', three: '3', four: '4', five: '5',
+  six: '6', seven: '7', eight: '8', nine: '9', ten: '10'
+};
+
 function extractSubject(str) {
   const words = str.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z]/g, ''));
   return words.find(w => ANIMAL_SUBJECTS.includes(w)) || null;
+}
+
+export function extractEntities(str) {
+  if (!str) return { nums: '', laterality: '', units: '', name: '' };
+  const s = str.toLowerCase();
+  const numMatches = s.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/g) || [];
+  const nums = numMatches.map(n => WORD_TO_DIGIT[n] || n).sort().join(',');
+  const laterality = (s.match(/\b(left|right|bilateral|unilateral|front|hind)\b/g) || []).sort().join(',');
+  const unitMatches = s.match(/\b(ml|mg|kg|drops?|tablets?|hours?|days?|weeks?|months?|times?)\b/g) || [];
+  const units = unitMatches.map(u => u.replace(/s$/, '')).sort().join(',');
+  const nameMatch = s.match(/\bname\s+is\s+([a-z]+)\b/i);
+  const name = nameMatch ? nameMatch[1].toLowerCase() : '';
+  return { nums, laterality, units, name };
+}
+
+export function areEntitiesEqual(e1, e2) {
+  return e1.nums === e2.nums &&
+         e1.laterality === e2.laterality &&
+         e1.units === e2.units &&
+         e1.name === e2.name;
 }
 
 export function findDatasetFuzzyMatch(normText) {
@@ -248,6 +273,7 @@ export function findDatasetFuzzyMatch(normText) {
   let bestScore = 0;
   const keys = Object.keys(TRAINING_DATASET_MAP);
   const inputSubject = extractSubject(normText);
+  const inputEntities = extractEntities(normText);
 
   const cleanStemWords = (str) => {
     return new Set(str.toLowerCase().split(/\s+/).map(w => {
@@ -268,6 +294,12 @@ export function findDatasetFuzzyMatch(normText) {
       if (keySubject !== inputSubject) {
         continue;
       }
+    }
+
+    // Strict Entity, Quantity, Directionality, and Name Invariance
+    const keyEntities = extractEntities(key);
+    if (!areEntitiesEqual(inputEntities, keyEntities)) {
+      continue;
     }
 
     if (Math.abs(key.length - normText.length) > Math.max(6, Math.floor(normText.length * 0.4))) {
@@ -331,6 +363,14 @@ export function refineSingleClinicalSentence(singleText) {
   }
 
   // Pet Name introductions
+  s = s.replace(/^(my\s+)?(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|pet)\s+name\s+is\s+([a-zA-Z]+)\b/i, (m, pfx, an, name) => {
+    const capName = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+    return (pfx ? (pfx.charAt(0).toUpperCase() + pfx.slice(1).toLowerCase()) : 'My ') + an.toLowerCase() + "'s name is " + capName;
+  });
+  s = s.replace(/^(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|patient)\s+name\s+is\s+([a-zA-Z]+)\b/i, (m, an, name) => {
+    const capName = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+    return "The " + an.toLowerCase() + "'s name is " + capName;
+  });
   s = s.replace(/^(my\s+)?(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|pet)\s+name\s+is\b/i, (m, pfx, an) => (pfx || 'My ') + an.toLowerCase() + "'s name is");
   s = s.replace(/^(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|patient)\s+name\s+is\b/i, (m, an) => 'The ' + an.toLowerCase() + "'s name is");
 
@@ -392,16 +432,54 @@ export function refineSingleClinicalSentence(singleText) {
   });
   s = s.replace(/\bhave\s+(fleas?|ticks?)\b/gi, 'has $1');
 
+  // Subject-verb: show lethargy / signs
+  s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\s+show\s+(lethargy|signs?|symptoms?)\b/gi, '$1 shows $2');
+
+  // Infestations
+  s = s.replace(/\b(?:have|has)\s+(?:a\s+)?(tick|flea)\s+infestation\s+all\s+over\s+(?:the\s+|its\s+)?body\b/gi, 'has a $1 infestation all over its body');
+
+  // Fracture & anatomical laterality
+  s = s.replace(/\b(?:have|has)\s+(?:a\s+)?fracture\s+in\s+(?:the\s+)?(left|right|both)?\s*([a-zA-Z]+)\b/gi, (m, side, bone) => {
+    const sPart = side ? side.toLowerCase() + ' ' : '';
+    return `has a fracture in the ${sPart}${bone}`;
+  });
+
+  // Medication administration
+  s = s.replace(/^give\s+(\d+(?:\.\d+)?\s*(?:ml|mg|g|drops?|tablets?|capsules?|pills?))\s+(.+?)\s+after\s+(?:food|meals?)\b/i, 'Administer $1 of $2 after meals');
+  s = s.replace(/^give\s+(\d+(?:\.\d+)?\s*(?:ml|mg|g|drops?|tablets?|capsules?|pills?))\s+(.+?)\s+before\s+(?:food|meals?)\b/i, 'Administer $1 of $2 before meals');
+  s = s.replace(/^give\s+(\d+(?:\.\d+)?\s*(?:ml|mg|g|drops?|tablets?|capsules?|pills?))\s+in\s+each\s+(ear|eye)\s+(?:twice|2\s+times)\s+(?:a\s+)?day\b/i, 'Give $1 in each $2 twice a day');
+
+  // Violent head shaking
+  s = s.replace(/\b(?:(?:is\s+|has\s+been\s+)?shaking\s+head\s+violently|shaking\s+head\s+violently)\s+(?:from|for)\s+(\w+)\s*hours?\b/gi, (m, cnt) => {
+    return `has been shaking its head violently for ${cnt} hours`;
+  });
+  s = s.replace(/\b(the\s+(?:[\w']+\s+)?(?:dog|cat|puppy|kitten|horse|patient|animal))\s+shaking\s+head\s+violently\b/gi, '$1 has been shaking its head violently');
+
+  // Limping & walking on leg
+  s = s.replace(/\bnot\s+walking\s+properly\s+on\s+(left|right)\s+(hind|front)\s+leg\b/gi, 'is not walking properly on its $1 $2 leg');
+  s = s.replace(/\bnot\s+walking\s+properly\s+on\s+(left|right)\s+leg\b/gi, 'is not walking properly on its $1 leg');
+  s = s.replace(/\blimping\s+(?:on\s+)?(left|right)\s+(hind|front)?\s*leg\b/gi, 'is limping on its $1 leg');
+  s = s.replace(/\blimping\s+since\s+jumped\s+from\s+(sofa|bed|chair|table|car)\b/gi, 'has been limping since jumping from the $1');
+
+  // Specific vomit counts (MUST run before generic and vomit)
+  s = s.replace(/\b(?:and\s+)?vomit(?:ed|ing)?\s+(\d+)\s+times?\b/gi, (match, count) => {
+    return `and has vomited ${count} times`;
+  });
+  s = s.replace(/\b(?:and\s+)?vomit(?:ed|ing)?\s+(one|two|three|four|five|six|seven|eight|nine|ten)\s+times?\b/gi, (match, word) => {
+    return `and has vomited ${word.toLowerCase()} times`;
+  });
+
   // Action coordination: "and shiver", "and vomit", "and cough"
   s = s.replace(/\band\s+(?:is\s+)?shiver\b/gi, 'and is shivering');
   s = s.replace(/\band\s+shivering\b/gi, 'and is shivering');
-  s = s.replace(/\band\s+(?:is\s+)?vomit(?:s)?\b(?![a-zA-Z])/gi, 'and is vomiting');
+  s = s.replace(/\band\s+(?:is\s+)?vomit(?:s)?\b(?!\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|times?|yellow|blood|food|fluid|since|for))/gi, 'and is vomiting');
   s = s.replace(/\band\s+(?:is\s+)?cough(?:s)?\b(?![a-zA-Z])/gi, 'and is coughing');
   s = s.replace(/\band\s+(?:is\s+)?limp(?:s)?\b(?![a-zA-Z])/gi, 'and is limping');
   s = s.replace(/\band\s+(?:is\s+)?scratch(?:es)?\b(?![a-zA-Z])/gi, 'and is scratching');
   s = s.replace(/\band\s+(?:is\s+)?bleed(?:s)?\b(?![a-zA-Z])/gi, 'and is bleeding');
 
   // Patient is down / recumbent
+  s = s.replace(/\b(?:and\s+)?down\s+on\s+(?:the\s+)?ground\b/gi, 'and is recumbent on the ground');
   s = s.replace(/\b((?:the|my)\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\s+down\s+on\s+(?:the\s+)?ground\b/gi, '$1 is recumbent on the ground');
   s = s.replace(/\b((?:the|my)\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\s+down\b/gi, '$1 is down');
 
@@ -409,7 +487,7 @@ export function refineSingleClinicalSentence(singleText) {
   s = s.replace(/\btouched\s+on\s+(?:the\s+)?(?:belly|stomach|tummy)\b/gi, 'touched on the abdomen');
 
   // Patient + vomit -> has vomited
-  s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+vomit\b(?![a-zA-Z])/gi, '$1 has vomited');
+  s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+vomit\b(?!(?:ed|ing|\s+times?|\s+since|\s+for|\s+\d+))/gi, '$1 has vomited');
   s = s.replace(/\b((?:the|my)\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\s+vomits\b(?![a-zA-Z])/gi, '$1 has been vomiting');
 
   // 4. Food Intake & Inappetence
@@ -448,8 +526,15 @@ export function refineSingleClinicalSentence(singleText) {
   // Body part states: "leg bleeding", "leg swollen", "eyes cloudy"
   s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:leg|paw|tail|ear|skin|belly|abdomen|wound))\s+bleeding\b/gi, '$1 is bleeding');
   s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:leg|paw|tail|ear|skin|belly|abdomen|udder|wound))\s+swollen\b/gi, '$1 is swollen');
+  s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:eyes?))\s+(?:are\s+)?cloudy\s+and\s+watery\b/gi, '$1 are cloudy and watery');
+  s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:eyes?))\s+is\s+cloudy\s+and\s+red\b/gi, '$1 are cloudy and red');
   s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:eyes?))\s+cloudy\b/gi, '$1 are cloudy');
   s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:eyes?))\s+watery\b/gi, '$1 are watery');
+
+  // Stool and urine
+  s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:stool))\s+is\s+watery\s+and\s+black\s+color\b/gi, "$1 is watery and dark in color");
+  s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:urine))\s+have\s+blood\s+spots?\b/gi, "$1 contains traces of blood");
+  s = s.replace(/\b((?:the\s+)?(?:[\w']+\s+)?(?:urine))\s+has\s+blood\s+spots?\b/gi, "$1 contains traces of blood");
 
   // Animal continuous actions & states without auxiliary verbs
   s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|rabbit|hamster|bird|patient|animal)|she|he|it)\s+(shivering|bleeding|limping|crying|scratching|coughing|sneezing|drooling)\b/gi, '$1 is $2');
@@ -467,22 +552,19 @@ export function refineSingleClinicalSentence(singleText) {
   s = s.replace(/\bcontinuous\s+(since|from|for)\b/gi, 'continuously $1');
   s = s.replace(/\brapid\s+(since|from|for)\b/gi, 'rapidly $1');
 
+  // Clinical terms & habits
+  s = s.replace(/^vaccination\s+due\s+for\s+(\w+)\s+(next\s+week|tomorrow|soon)\b/i, 'The $1 vaccination is due $2');
+  s = s.replace(/\bdrink\s+(?:a\s+)?lot\s+of\s+water\s+and\s+urinate\s+frequent(?:ly)?\b/gi, 'is drinking a lot of water and urinating frequently');
+  s = s.replace(/\brefuse\s+to\s+eat\s+dry\s+kibble\b/gi, 'refuses to eat dry kibbles');
+
   // 5. Vomiting expressions
   s = s.replace(/(?<!\b(?:has\s+been|have\s+been)\s+)\b(?:is\s+|has\s+)?vomit(?:ed|ing)?\s+since\s+yesterday\b/gi, 'has been vomiting since yesterday');
   s = s.replace(/(?<!\b(?:has\s+been|have\s+been)\s+)\b(?:is\s+|has\s+)?vomit(?:ed|ing)?\s+since\s+this\s+morning\b/gi, 'has been vomiting since this morning');
   s = s.replace(/(?<!\b(?:has\s+been|have\s+been)\s+)\b(?:is\s+|has\s+)?vomit(?:ed|ing)?\s+for\s+(\w+\s+days?)\b/gi, 'has been vomiting for $1');
-  s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\s+vomit\b(?!(?:ed|ing|\s+times?|\s+since|\s+for))/gi, '$1 has vomited');
+  s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\s+vomit\b(?!(?:ed|ing|\s+times?|\s+since|\s+for|\s+\d+))/gi, '$1 has vomited');
   s = s.replace(/\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\s+vomits\b/gi, '$1 has been vomiting');
   s = s.replace(/(?<!\b(?:is|are|was|were|has\s+been|have\s+been)\s+)\b(the\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\s+vomiting\b/gi, '$1 is vomiting');
 
-  s = s.replace(/\b(?:and\s+)?vomit(?:ed|ing)?\s+(\d+)\s+times?\b/gi, (match, count) => {
-    const word = count === '1' ? 'once' : count === '2' ? 'twice' : (NUM_WORDS[count] || count) + ' times';
-    return `and has vomited ${word}`;
-  });
-  s = s.replace(/\b(?:and\s+)?vomit(?:ed|ing)?\s+(one|two|three|four|five|six)\s+times?\b/gi, (match, word) => {
-    const w = word.toLowerCase() === 'one' ? 'once' : word.toLowerCase() === 'two' ? 'twice' : `${word.toLowerCase()} times`;
-    return `and has vomited ${w}`;
-  });
   s = s.replace(/\band\s+vomit\b/gi, 'and has vomited');
   s = s.replace(/\band\s+vomiting\b/gi, 'and has been vomiting');
 
@@ -505,7 +587,10 @@ export function refineSingleClinicalSentence(singleText) {
   s = s.replace(/\bblood\s+in\s+(?:motion|stool)\b/gi, 'blood in the stool');
   s = s.replace(/\bblood\s+in\s+urine\b/gi, 'blood in the urine');
 
-  // Clean redundant words & spaces
+  // Clean redundant words & duplicate auxiliary verbs
+  s = s.replace(/\band\s+is\s+and\s+has\s+vomited\b/gi, 'and has vomited');
+  s = s.replace(/\band\s+is\s+and\s+is\b/gi, 'and is');
+  s = s.replace(/\bhas\s+not\s+been\s+eating\s+and\s+is\s+recumbent\b/gi, 'is not eating and is recumbent');
   s = s.replace(/\b(?:is|are|was|were)\s+has\s+not\s+been\b/gi, 'has not been');
   s = s.replace(/\b(?:is|are|was|were)\s+has\s+been\b/gi, 'has been');
   s = s.replace(/\b(?:is|are|was|were)\s+has\b/gi, 'has');

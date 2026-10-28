@@ -10,7 +10,7 @@
  */
 
 import { TRAINING_DATASET_MAP } from './trainingDataMap.js';
-import { findDatasetFuzzyMatch } from '../hooks/useClinicalAutoRefine.js';
+import { findDatasetFuzzyMatch, localRefineClinicalText } from '../hooks/useClinicalAutoRefine.js';
 
 const VET_SPELLING_DICTIONARY = {
   'vomited': ['vomitted', 'vomitd', 'vomitting'],
@@ -418,8 +418,8 @@ export function analyzeClinicalEnglish(rawText) {
   else if (score < 85) scoreLabel = 'Good';
   else if (score < 95) scoreLabel = 'Very Clear';
 
-  // Compute full refined text preview by applying all replacements
-  const refinedText = applyAllIssuesToText(rawText, uniqueIssues);
+  // Compute full refined text preview using the comprehensive clinical refinement engine
+  const refinedText = localRefineClinicalText(rawText) || applyAllIssuesToText(rawText, uniqueIssues);
 
   return {
     score,

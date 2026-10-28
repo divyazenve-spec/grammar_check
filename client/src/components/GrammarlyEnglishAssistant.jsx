@@ -51,12 +51,14 @@ export default function GrammarlyEnglishAssistant({
   };
 
   const handleFixAll = () => {
-    if (!onApplyText || activeIssues.length === 0) return;
-    const refined = applyAllIssuesToText(text, activeIssues);
-    onApplyText(refined);
-    setJustFixedAll(true);
-    setTimeout(() => setJustFixedAll(false), 2500);
-    setIsExpanded(false);
+    if (!onApplyText || (!text || !text.trim())) return;
+    const refined = localRefineClinicalText(text.trim(), 'symptoms') || applyAllIssuesToText(text, activeIssues);
+    if (refined) {
+      onApplyText(refined);
+      setJustFixedAll(true);
+      setTimeout(() => setJustFixedAll(false), 2500);
+      setIsExpanded(false);
+    }
   };
 
   const handleAiRefine = async () => {

@@ -91,6 +91,75 @@ public class ClinicalTextRefiner {
             "bird", "birds", "parrot", "parrots", "cattle", "heifer", "bull", "mare", "stallion", "pony", "hound"
     );
 
+    private static final Map<String, String> WORD_TO_DIGIT = Map.of(
+            "one", "1", "two", "2", "three", "3", "four", "4", "five", "5",
+            "six", "6", "seven", "7", "eight", "8", "nine", "9", "ten", "10"
+    );
+
+    private static class EntityFingerprint {
+        final String nums;
+        final String laterality;
+        final String units;
+        final String name;
+
+        EntityFingerprint(String nums, String laterality, String units, String name) {
+            this.nums = nums;
+            this.laterality = laterality;
+            this.units = units;
+            this.name = name;
+        }
+
+        boolean matches(EntityFingerprint other) {
+            if (other == null) return false;
+            return Objects.equals(this.nums, other.nums) &&
+                   Objects.equals(this.laterality, other.laterality) &&
+                   Objects.equals(this.units, other.units) &&
+                   Objects.equals(this.name, other.name);
+        }
+    }
+
+    private EntityFingerprint extractEntities(String str) {
+        if (str == null) return new EntityFingerprint("", "", "", "");
+        String s = str.toLowerCase();
+
+        List<String> nums = new ArrayList<>();
+        Matcher numMatcher = Pattern.compile("\\b(\\d+|one|two|three|four|five|six|seven|eight|nine|ten)\\b").matcher(s);
+        while (numMatcher.find()) {
+            String token = numMatcher.group(1);
+            nums.add(WORD_TO_DIGIT.getOrDefault(token, token));
+        }
+        Collections.sort(nums);
+
+        List<String> lat = new ArrayList<>();
+        Matcher latMatcher = Pattern.compile("\\b(left|right|bilateral|unilateral|front|hind)\\b").matcher(s);
+        while (latMatcher.find()) {
+            lat.add(latMatcher.group(1));
+        }
+        Collections.sort(lat);
+
+        List<String> units = new ArrayList<>();
+        Matcher unitMatcher = Pattern.compile("\\b(ml|mg|kg|drops?|tablets?|hours?|days?|weeks?|months?|times?)\\b").matcher(s);
+        while (unitMatcher.find()) {
+            String u = unitMatcher.group(1);
+            if (u.endsWith("s")) u = u.substring(0, u.length() - 1);
+            units.add(u);
+        }
+        Collections.sort(units);
+
+        String name = "";
+        Matcher nameMatcher = Pattern.compile("\\bname\\s+is\\s+([a-zA-Z]+)\\b").matcher(s);
+        if (nameMatcher.find()) {
+            name = nameMatcher.group(1).toLowerCase();
+        }
+
+        return new EntityFingerprint(
+                String.join(",", nums),
+                String.join(",", lat),
+                String.join(",", units),
+                name
+        );
+    }
+
     private String extractSubject(String str) {
         if (str == null) return null;
         String[] words = str.toLowerCase().split("\\s+");
@@ -121,6 +190,7 @@ public class ClinicalTextRefiner {
         String bestMatch = null;
         double bestScore = 0.0;
         String inputSubject = extractSubject(normKey);
+        EntityFingerprint inputEntities = extractEntities(normKey);
 
         for (String key : TRAINING_DATASET_MAP.keySet()) {
             // Strict Patient Species Integrity: Never substitute species (e.g. dog -> cat)
@@ -129,6 +199,12 @@ public class ClinicalTextRefiner {
                 if (!inputSubject.equals(keySubject)) {
                     continue;
                 }
+            }
+
+            // Strict Entity, Quantity, Directionality, and Name Invariance
+            EntityFingerprint keyEntities = extractEntities(key);
+            if (!inputEntities.matches(keyEntities)) {
+                continue;
             }
 
             if (Math.abs(key.length() - normKey.length()) > Math.max(5, (int)(normKey.length() * 0.35))) {
@@ -423,6 +499,8 @@ public class ClinicalTextRefiner {
         }
 
         // Pet Name introductions
+        t = t.replaceAll("(?i)^(my\\s+)?(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|pet)\\s+name\\s+is\\s+([a-zA-Z]+)\\b", "$1$2's name is $3");
+        t = t.replaceAll("(?i)^(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|patient)\\s+name\\s+is\\s+([a-zA-Z]+)\\b", "The $1's name is $2");
         t = t.replaceAll("(?i)^(my\\s+)?(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|pet)\\s+name\\s+is\\b", "$1$2's name is");
         t = t.replaceAll("(?i)^(dog|cat|puppy|kitten|horse|foal|bird|parrot|cow|calf|patient)\\s+name\\s+is\\b", "The $1's name is");
 
@@ -492,16 +570,54 @@ public class ClinicalTextRefiner {
         t = t.replaceAll("(?i)\\bhave\\s+loose motion\\b", "has had diarrhea");
         t = t.replaceAll("(?i)\\bhave\\s+(fleas?|ticks?)\\b", "has $1");
 
+        // Subject-verb: show lethargy / signs
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\\s+show\\s+(lethargy|signs?|symptoms?)\\b", "$1 shows $2");
+
+        // Infestations
+        t = t.replaceAll("(?i)\\b(?:have|has)\\s+(?:a\\s+)?(tick|flea)\\s+infestation\\s+all\\s+over\\s+(?:the\\s+|its\\s+)?body\\b", "has a $1 infestation all over its body");
+
+        // Fracture & anatomical laterality
+        t = t.replaceAll("(?i)\\b(?:have|has)\\s+(?:a\\s+)?fracture\\s+in\\s+(?:the\\s+)?(left|right|both)?\\s*([a-zA-Z]+)\\b", "has a fracture in the $1 $2");
+        t = t.replaceAll("(?i)\\bhas\\s+a\\s+fracture\\s+in\\s+the\\s+([a-zA-Z]+)\\b", "has a fracture in the $1");
+
+        // Medication administration
+        t = t.replaceAll("(?i)^give\\s+(\\d+(?:\\.\\d+)?\\s*(?:ml|mg|g|drops?|tablets?|capsules?|pills?))\\s+(.+?)\\s+after\\s+(?:food|meals?)\\b", "Administer $1 of $2 after meals");
+        t = t.replaceAll("(?i)^give\\s+(\\d+(?:\\.\\d+)?\\s*(?:ml|mg|g|drops?|tablets?|capsules?|pills?))\\s+(.+?)\\s+before\\s+(?:food|meals?)\\b", "Administer $1 of $2 before meals");
+        t = t.replaceAll("(?i)^give\\s+(\\d+(?:\\.\\d+)?\\s*(?:ml|mg|g|drops?|tablets?|capsules?|pills?))\\s+in\\s+each\\s+(ear|eye)\\s+(?:twice|2\\s+times)\\s+(?:a\\s+)?day\\b", "Give $1 in each $2 twice a day");
+
+        // Violent head shaking
+        t = t.replaceAll("(?i)\\b(?:(?:is\\s+|has\\s+been\\s+)?shaking\\s+head\\s+violently|shaking\\s+head\\s+violently)\\s+(?:from|for)\\s+(\\w+)\\s*hours?\\b", "has been shaking its head violently for $1 hours");
+        t = t.replaceAll("(?i)\\b(the (?:[\\w']+\\s+)?(?:dog|cat|puppy|kitten|horse|patient|animal))\\s+shaking\\s+head\\s+violently\\b", "$1 has been shaking its head violently");
+
+        // Limping & walking on leg
+        t = t.replaceAll("(?i)\\bnot\\s+walking\\s+properly\\s+on\\s+(left|right)\\s+(hind|front)\\s+leg\\b", "is not walking properly on its $1 $2 leg");
+        t = t.replaceAll("(?i)\\bnot\\s+walking\\s+properly\\s+on\\s+(left|right)\\s+leg\\b", "is not walking properly on its $1 leg");
+        t = t.replaceAll("(?i)\\blimping\\s+(?:on\\s+)?(left|right)\\s+(hind|front)?\\s*leg\\b", "is limping on its $1 leg");
+        t = t.replaceAll("(?i)\\blimping\\s+since\\s+jumped\\s+from\\s+(sofa|bed|chair|table|car)\\b", "has been limping since jumping from the $1");
+
+        // Specific vomit counts (MUST run before generic and vomit)
+        Pattern vomitNum = Pattern.compile("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+(\\d+)\\s+times?\\b");
+        Matcher vnm = vomitNum.matcher(t);
+        StringBuffer sbVn = new StringBuffer();
+        while (vnm.find()) {
+            vnm.appendReplacement(sbVn, "and has vomited " + vnm.group(1) + " times");
+        }
+        vnm.appendTail(sbVn);
+        t = sbVn.toString();
+
+        t = t.replaceAll("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+(one|two|three|four|five|six|seven|eight|nine|ten)\\s+times?\\b", "and has vomited $1 times");
+
         // Action coordination: "and shiver", "and vomit", "and cough"
         t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?shiver\\b", "and is shivering");
         t = t.replaceAll("(?i)\\band\\s+shivering\\b", "and is shivering");
-        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?vomit(?:s)?\\b(?![a-zA-Z])", "and is vomiting");
+        t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?vomit(?:s)?\\b(?!\\s+(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten|times?|yellow|blood|food|fluid|since|for))", "and is vomiting");
         t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?cough(?:s)?\\b(?![a-zA-Z])", "and is coughing");
         t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?limp(?:s)?\\b(?![a-zA-Z])", "and is limping");
         t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?scratch(?:es)?\\b(?![a-zA-Z])", "and is scratching");
         t = t.replaceAll("(?i)\\band\\s+(?:is\\s+)?bleed(?:s)?\\b(?![a-zA-Z])", "and is bleeding");
 
         // Patient is down / recumbent
+        t = t.replaceAll("(?i)\\b(?:and\\s+)?down\\s+on\\s+(?:the\\s+)?ground\\b", "and is recumbent on the ground");
         t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\\s+down\\s+on\\s+(?:the\\s+)?ground\\b", "$1 is recumbent on the ground");
         t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cow|calf|cattle|heifer|bull|horse|foal|dog|cat|patient|animal)|she|he|it)\\s+down\\b", "$1 is down");
 
@@ -509,7 +625,7 @@ public class ClinicalTextRefiner {
         t = t.replaceAll("(?i)\\btouched\\s+on\\s+(?:the\\s+)?(?:belly|stomach|tummy)\\b", "touched on the abdomen");
 
         // Patient + vomit -> has vomited
-        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+vomit\\b(?![a-zA-Z])", "$1 has vomited");
+        t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+vomit\\b(?!(?:ed|ing|\\s+times?|\\s+since|\\s+for|\\s+\\d+))", "$1 has vomited");
         t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal))\\s+vomits\\b(?![a-zA-Z])", "$1 has been vomiting");
 
         // 4. Food Intake & Inappetence
@@ -536,6 +652,21 @@ public class ClinicalTextRefiner {
         t = t.replaceAll("(?i)(?<!\\b(?:is|are|was|were|has\\s+been|have\\s+been|can|could|will|would|does|do|did)\\s+)\\bnot\\s+sleeping\\b", "is not sleeping");
         t = t.replaceAll("(?i)(?<!\\b(?:is|are|was|were|has\\s+been|have\\s+been|can|could|will|would|does|do|did)\\s+)\\bnot\\s+sleep\\b", "is not sleeping");
 
+        // Animal body parts possessive & states
+        t = t.replaceAll("(?i)^(the\\s+)?(cat|dog|puppy|kitten|horse|foal|cow|calf|rabbit|hamster|bird|patient|animal)\\s+(leg|legs|eyes?|ears?|skin|mouth|belly|abdomen|hoof|hooves|udder|paw|paws|tail|tooth|teeth|nose|wound)\\b", "The $2's $3");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:eyes?))\\s+(?:are\\s+)?cloudy\\s+and\\s+watery\\b", "$1 are cloudy and watery");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:eyes?))\\s+is\\s+cloudy\\s+and\\s+red\\b", "$1 are cloudy and red");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:eyes?))\\s+cloudy\\b", "$1 are cloudy");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:eyes?))\\s+watery\\b", "$1 are watery");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:stool))\\s+is\\s+watery\\s+and\\s+black\\s+color\\b", "$1 is watery and dark in color");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:urine))\\s+have\\s+blood\\s+spots?\\b", "$1 contains traces of blood");
+        t = t.replaceAll("(?i)\\b((?:the\\s+)?(?:[\\w']+\\s+)?(?:urine))\\s+has\\s+blood\\s+spots?\\b", "$1 contains traces of blood");
+
+        // Clinical habits & notes
+        t = t.replaceAll("(?i)^vaccination\\s+due\\s+for\\s+(\\w+)\\s+(next\\s+week|tomorrow|soon)\\b", "The $1 vaccination is due $2");
+        t = t.replaceAll("(?i)\\bdrink\\s+(?:a\\s+)?lot\\s+of\\s+water\\s+and\\s+urinate\\s+frequent(?:ly)?\\b", "is drinking a lot of water and urinating frequently");
+        t = t.replaceAll("(?i)\\brefuse\\s+to\\s+eat\\s+dry\\s+kibble\\b", "refuses to eat dry kibbles");
+
         // Other continuous actions & predicate states missing auxiliary verbs
         t = t.replaceAll("(?i)\\b((?:the|my)\\s+(?:cat|dog|puppy|kitten|kitty|horse|foal|mare|stallion|pony|cow|calf|cattle|heifer|bull|bird|parrot|chicken|patient|animal)|she|he|it)\\s+not\\s+(good|well|fine|active|normal|ok|okay|right|happy|alert)\\b", "$1 is not $2");
         t = t.replaceAll("(?i)(?<!\\b(?:is|are|was|were|has\\s+been|have\\s+been|can|could|will|would|does|do|did)\\s+)\\bnot\\s+(good|well|fine|active|normal|ok|okay|right|happy|alert)\\b", "is not $1");
@@ -546,25 +677,9 @@ public class ClinicalTextRefiner {
         t = t.replaceAll("(?i)(?<!\\b(?:has\\s+been|have\\s+been)\\s+)\\b(?:is\\s+|has\\s+)?vomit(?:ed|ing)?\\s+since\\s+yesterday\\b", "has been vomiting since yesterday");
         t = t.replaceAll("(?i)(?<!\\b(?:has\\s+been|have\\s+been)\\s+)\\b(?:is\\s+|has\\s+)?vomit(?:ed|ing)?\\s+since\\s+this\\s+morning\\b", "has been vomiting since this morning");
         t = t.replaceAll("(?i)(?<!\\b(?:has\\s+been|have\\s+been)\\s+)\\b(?:is\\s+|has\\s+)?vomit(?:ed|ing)?\\s+for\\s+(\\w+\\s+days?)\\b", "has been vomiting for $1");
-        t = t.replaceAll("(?i)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\\s+vomit\\b(?!(?:ed|ing|\\s+times?|\\s+since|\\s+for))", "$1 has vomited");
+        t = t.replaceAll("(?i)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\\s+vomit\\b(?!(?:ed|ing|\\s+times?|\\s+since|\\s+for|\\s+\\d+))", "$1 has vomited");
         t = t.replaceAll("(?i)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\\s+vomits\\b", "$1 has been vomiting");
         t = t.replaceAll("(?i)(?<!\\b(?:is|are|was|were|has\\s+been|have\\s+been)\\s+)\\b(the (?:cat|dog|puppy|kitten|horse|foal|cow|calf|patient|animal)|she|he|it)\\s+vomiting\\b", "$1 is vomiting");
-
-        t = t.replaceAll("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+1\\s+times?\\b", "and has vomited once");
-        t = t.replaceAll("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+2\\s+times?\\b", "and has vomited twice");
-        t = t.replaceAll("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+one\\s+times?\\b", "and has vomited once");
-        t = t.replaceAll("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+two\\s+times?\\b", "and has vomited twice");
-
-        Pattern vomitCount = Pattern.compile("(?i)\\b(?:and\\s+)?vomit(?:ed|ing)?\\s+(\\d+)\\s+times?\\b");
-        Matcher vcm = vomitCount.matcher(t);
-        StringBuffer sbVomit = new StringBuffer();
-        while (vcm.find()) {
-            String cnt = vcm.group(1);
-            String word = NUM_WORDS.getOrDefault(cnt, cnt);
-            vcm.appendReplacement(sbVomit, "and has vomited " + word + " times");
-        }
-        vcm.appendTail(sbVomit);
-        t = sbVomit.toString();
 
         t = t.replaceAll("(?i)\\band\\s+vomit\\b", "and has vomited");
         t = t.replaceAll("(?i)\\band\\s+vomiting\\b", "and has been vomiting");
@@ -582,6 +697,9 @@ public class ClinicalTextRefiner {
         t = t.replaceAll("(?i)\\bblood\\s+in\\s+urine\\b", "blood in the urine");
 
         // Clean redundant words & spaces
+        t = t.replaceAll("(?i)\\band\\s+is\\s+and\\s+has\\s+vomited\\b", "and has vomited");
+        t = t.replaceAll("(?i)\\band\\s+is\\s+and\\s+is\\b", "and is");
+        t = t.replaceAll("(?i)\\bhas\\s+not\\s+been\\s+eating\\s+and\\s+is\\s+recumbent\\b", "is not eating and is recumbent");
         t = t.replaceAll("(?i)\\b(?:is|are|was|were)\\s+has\\s+not\\s+been\\b", "has not been");
         t = t.replaceAll("(?i)\\b(?:is|are|was|were)\\s+has\\s+not\\b", "has not");
         t = t.replaceAll("(?i)\\b(?:is|are|was|were)\\s+has\\s+been\\b", "has been");
@@ -591,6 +709,7 @@ public class ClinicalTextRefiner {
         t = t.replaceAll("(?i)\\b(?:has\\s+)+has\\b", "has");
         t = t.replaceAll("(?i)\\bhas\\s+had\\s+had\\b", "has had");
         t = t.replaceAll("(?i)\\bhas\\s+not\\s+has\\s+not\\b", "has not");
+        t = t.replaceAll("(?i)\\bis\\s+is\\b", "is");
         t = t.replaceAll("\\s{2,}", " ").trim();
 
         // Ensure proper capitalization and ending punctuation

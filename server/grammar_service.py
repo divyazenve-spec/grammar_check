@@ -485,7 +485,27 @@ def correct_single_sentence(sentence: str) -> str:
         return next(iter(matched)) if matched else None
 
     input_subj = get_subj(norm_key)
-    filtered_keys = [k for k in t_map.keys() if (not input_subj or get_subj(k) == input_subj)]
+    WORD_TO_DIGIT = {
+        'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+        'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10'
+    }
+
+    def extract_entities(txt):
+        if not txt:
+            return ("", "", "", "")
+        s_low = txt.lower()
+        nums = sorted([WORD_TO_DIGIT.get(n, n) for n in re.findall(r'\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b', s_low)])
+        lat = sorted(re.findall(r'\b(left|right|bilateral|unilateral|front|hind)\b', s_low))
+        units = sorted([re.sub(r's$', '', u) for u in re.findall(r'\b(ml|mg|kg|drops?|tablets?|hours?|days?|weeks?|months?|times?)\b', s_low)])
+        nm = re.search(r'\bname\s+is\s+([a-zA-Z]+)\b', s_low)
+        name = nm.group(1).lower() if nm else ""
+        return (",".join(nums), ",".join(lat), ",".join(units), name)
+
+    input_entities = extract_entities(norm_key)
+    filtered_keys = [
+        k for k in t_map.keys()
+        if (not input_subj or get_subj(k) == input_subj) and extract_entities(k) == input_entities
+    ]
     close_matches = difflib.get_close_matches(norm_key, filtered_keys, n=1, cutoff=0.76)
     if close_matches:
         return t_map[close_matches[0]]
