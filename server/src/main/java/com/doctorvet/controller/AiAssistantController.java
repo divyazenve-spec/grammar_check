@@ -34,4 +34,20 @@ public class AiAssistantController {
         String fieldType = request != null ? request.fieldType() : "general";
         return ResponseEntity.ok(aiService.refineClinicalText(text, fieldType));
     }
+
+    public record GrammarCheckResponse(String originalText, String correctedText, String modelUsed) {}
+
+    @PostMapping("/proofread")
+    public ResponseEntity<GrammarCheckResponse> proofreadChiefComplaint(@RequestBody java.util.Map<String, String> request) {
+        String text = request != null ? request.getOrDefault("text", "") : "";
+        var result = aiService.refineClinicalText(text, "symptoms");
+        return ResponseEntity.ok(new GrammarCheckResponse(result.originalText(), result.refinedText(), result.modelUsed()));
+    }
+
+    @PostMapping("/grammar-check")
+    public ResponseEntity<GrammarCheckResponse> checkGrammar(@RequestBody java.util.Map<String, String> request) {
+        String text = request != null ? request.getOrDefault("text", "") : "";
+        var result = aiService.refineClinicalText(text, "symptoms");
+        return ResponseEntity.ok(new GrammarCheckResponse(result.originalText(), result.refinedText(), result.modelUsed()));
+    }
 }
